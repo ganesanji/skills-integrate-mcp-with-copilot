@@ -5,22 +5,101 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from passlib.context import CryptContext
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
 
 app = FastAPI(title="Mergington High School API",
-              description="API for viewing and signing up for extracurricular activities")
+              description="API for viewing and signing up for extracurricular activities and authentication")
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
 
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# In-memory user database (for demo purposes)
+users_db = {
+    "admin@mergington.edu": {
+        "username": "admin@mergington.edu",
+        "full_name": "Admin User",
+        "hashed_password": pwd_context.hash("AdminPass123!"),
+        "role": "admin",
+        "disabled": False
+    },
+    "student@mergington.edu": {
+        "username": "student@mergington.edu",
+        "full_name": "Student User",
+        "hashed_password": pwd_context.hash("StudentPass123!"),
+        "role": "student",
+        "disabled": False
+    }
+}
+
 # In-memory activity database
 activities = {
+    def verify_password(plain_password, hashed_password):
+        return pwd_context.verify(plain_password, hashed_password)
+
+    def get_password_hash(password):
+        return pwd_context.hash(password)
+
+    def password_complexity(password: str) -> bool:
+        import re
+        # At least 8 chars, one uppercase, one lowercase, one digit, one special char
+        pattern = r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$"
+        return re.match(pattern, password) is not None
+
+    def get_user(db, username: str):
+        if username in db:
+            return db[username]
+        return None
+
+    def authenticate_user(db, username: str, password: str):
+        user = get_user(db, username)
+        if not user:
+            return False
+        if not verify_password(password, user["hashed_password"]):
+            return False
+        return user
+    @app.post("/register")
+    def register(username: str, full_name: str, password: str, role: str = "student"):
+        if username in users_db:
+            raise HTTPException(status_code=400, detail="User already exists")
+        if not password_complexity(password):
+            raise HTTPException(status_code=400, detail="Password does not meet complexity requirements")
+        users_db[username] = {
+            "username": username,
+            "full_name": full_name,
+            "hashed_password": get_password_hash(password),
+            "role": role,
+            "disabled": False
+        }
+        return {"message": f"User {username} registered successfully"}
+
+    @app.post("/token")
+    def login(form_data: OAuth2PasswordRequestForm = Depends()):
+        user = authenticate_user(users_db, form_data.username, form_data.password)
+        if not user:
+            raise HTTPException(status_code=401, detail="Incorrect username or password")
+        # For demo, return a fake token
+        return {"access_token": user["username"], "token_type": "bearer"}
+
+    @app.post("/reset-password")
+    def reset_password(username: str, new_password: str):
+        user = get_user(users_db, username)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not password_complexity(new_password):
+            raise HTTPException(status_code=400, detail="Password does not meet complexity requirements")
+        user["hashed_password"] = get_password_hash(new_password)
+        return {"message": "Password reset successful"}
     "Chess Club": {
         "description": "Learn strategies and compete in chess tournaments",
         "schedule": "Fridays, 3:30 PM - 5:00 PM",
